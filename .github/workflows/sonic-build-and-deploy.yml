@@ -1,0 +1,56 @@
+name: SONiC build and deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "sonic/**"
+      - ".github/workflows/sonic-build-and-deploy.yml"
+  schedule:
+    # Nightly rebuild to refresh GitHub / Crunchbase stats.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install landscape2
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/cncf/landscape2/releases/latest/download/landscape2-installer.sh | sh
+
+      - name: Build landscape
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRUNCHBASE_API_KEY: ${{ secrets.CRUNCHBASE_API_KEY }}
+        run: |
+          landscape2 build \
+            --data-url https://raw.githubusercontent.com/sonic-net/sonic-landscape/main/landscape.yml \
+            --settings-file sonic/settings.yml \
+            --logos-source-url https://raw.githubusercontent.com/sonic-net/sonic-landscape/main/hosted_logos \
+            --guide-url https://raw.githubusercontent.com/sonic-net/sonic-landscape/main/guide.yml \
+            --output-dir build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy to S3
+        run: aws s3 sync build/ s3://sonic.landscape2.io --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"
